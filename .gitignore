@@ -35,3 +35,9 @@ hack/tls-setup/certs
 /tools/benchmark/benchmark
 /out
 /etcd-dump-logs
+
+/.vscode/
+/.agents/
+/.claude/
+AGENTS.md
+CLAUDE.md
