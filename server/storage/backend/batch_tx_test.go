@@ -23,7 +23,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 	"go.etcd.io/etcd/server/v3/storage/schema"

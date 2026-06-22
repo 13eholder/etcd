@@ -16,7 +16,7 @@
 
 package backend
 
-import bolt "go.etcd.io/bbolt"
+import bolt "github.com/13eholder/vmbolt"
 
 var boltOpenOptions *bolt.Options = nil
 

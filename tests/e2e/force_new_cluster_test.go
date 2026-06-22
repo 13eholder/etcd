@@ -24,7 +24,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"go.etcd.io/bbolt"
+	bbolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 	"go.etcd.io/etcd/server/v3/storage/datadir"
 	"go.etcd.io/etcd/server/v3/storage/schema"

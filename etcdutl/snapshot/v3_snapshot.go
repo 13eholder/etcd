@@ -29,7 +29,7 @@ import (
 
 	"go.uber.org/zap"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"

@@ -30,7 +30,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
-	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/client/pkg/v3/types"
@@ -179,10 +178,10 @@ func TestBootstrapBackend(t *testing.T) {
 			require.NoErrorf(t, err, "Failed to create the data dir, unexpected error: %v", err)
 
 			cfg := config.ServerConfig{
-				Name:                "demoNode",
-				DataDir:             dataDir,
-				BackendFreelistType: bolt.FreelistArrayType,
-				Logger:              zaptest.NewLogger(t),
+				Name:    "demoNode",
+				DataDir: dataDir,
+				// BackendFreelistType: bolt.FreelistArrayType,
+				Logger: zaptest.NewLogger(t),
 			}
 
 			if tt.prepareData != nil {

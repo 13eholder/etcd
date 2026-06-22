@@ -21,7 +21,7 @@ import (
 
 	"go.uber.org/zap"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
@@ -35,7 +35,7 @@ func snapDir(dataDir string) string {
 }
 
 func getBuckets(dbPath string) (buckets []string, err error) {
-	db, derr := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: flockTimeout})
+	db, derr := bolt.Open(dbPath, 0o600, &bolt.Options{})
 	if derr != nil {
 		return nil, fmt.Errorf("failed to open bolt DB %w", derr)
 	}
@@ -132,7 +132,7 @@ func metaDecoder(k, v []byte) {
 }
 
 func iterateBucket(dbPath, bucket string, limit uint64, decode bool) (err error) {
-	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: flockTimeout})
+	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{})
 	if err != nil {
 		return fmt.Errorf("failed to open bolt DB %w", err)
 	}

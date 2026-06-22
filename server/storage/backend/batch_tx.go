@@ -24,8 +24,8 @@ import (
 
 	"go.uber.org/zap"
 
-	bolt "go.etcd.io/bbolt"
-	bolterrors "go.etcd.io/bbolt/errors"
+	bolt "github.com/13eholder/vmbolt"
+	bolterrors "github.com/13eholder/vmbolt/errors"
 )
 
 type BucketID int

@@ -35,7 +35,6 @@ import (
 	"google.golang.org/grpc"
 	"sigs.k8s.io/yaml"
 
-	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/client/pkg/v3/logutil"
 	"go.etcd.io/etcd/client/pkg/v3/srv"
 	"go.etcd.io/etcd/client/pkg/v3/tlsutil"
@@ -1669,10 +1668,10 @@ func (cfg *Config) getMetricsURLs() (ss []string) {
 	return ss
 }
 
-func parseBackendFreelistType(freelistType string) bolt.FreelistType {
-	if freelistType == freelistArrayType {
-		return bolt.FreelistArrayType
-	}
+// func parseBackendFreelistType(freelistType string) bolt.FreelistType {
+// 	if freelistType == freelistArrayType {
+// 		return bolt.FreelistArrayType
+// 	}
 
-	return bolt.FreelistMapType
-}
+// 	return bolt.FreelistMapType
+// }

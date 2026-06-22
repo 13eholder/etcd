@@ -17,7 +17,7 @@ package schema
 import (
 	"github.com/coreos/go-semver/semver"
 
-	"go.etcd.io/bbolt"
+	bbolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 )
 

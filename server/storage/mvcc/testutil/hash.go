@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.etcd.io/bbolt"
+	bbolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 )
 

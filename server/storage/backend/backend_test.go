@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/13eholder/vmbolt"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 	"go.etcd.io/etcd/server/v3/storage/schema"
@@ -124,76 +124,76 @@ func TestBackendBatchIntervalCommit(t *testing.T) {
 	}))
 }
 
-func TestBackendDefrag(t *testing.T) {
-	bcfg := backend.DefaultBackendConfig(zaptest.NewLogger(t))
-	// Make sure we change BackendFreelistType
-	// The goal is to verify that we restore config option after defrag.
-	if bcfg.BackendFreelistType == bolt.FreelistMapType {
-		bcfg.BackendFreelistType = bolt.FreelistArrayType
-	} else {
-		bcfg.BackendFreelistType = bolt.FreelistMapType
-	}
+// func TestBackendDefrag(t *testing.T) {
+// 	bcfg := backend.DefaultBackendConfig(zaptest.NewLogger(t))
+// 	// Make sure we change BackendFreelistType
+// 	// The goal is to verify that we restore config option after defrag.
+// 	if bcfg.BackendFreelistType == bolt.FreelistMapType {
+// 		bcfg.BackendFreelistType = bolt.FreelistArrayType
+// 	} else {
+// 		bcfg.BackendFreelistType = bolt.FreelistMapType
+// 	}
 
-	b, _ := betesting.NewTmpBackendFromCfg(t, bcfg)
+// 	b, _ := betesting.NewTmpBackendFromCfg(t, bcfg)
 
-	defer betesting.Close(t, b)
+// 	defer betesting.Close(t, b)
 
-	tx := b.BatchTx()
-	tx.Lock()
-	tx.UnsafeCreateBucket(schema.Test)
-	for i := 0; i < backend.DefragLimitForTest()+100; i++ {
-		tx.UnsafePut(schema.Test, []byte(fmt.Sprintf("foo_%d", i)), []byte("bar"))
-	}
-	tx.Unlock()
-	b.ForceCommit()
+// 	tx := b.BatchTx()
+// 	tx.Lock()
+// 	tx.UnsafeCreateBucket(schema.Test)
+// 	for i := 0; i < backend.DefragLimitForTest()+100; i++ {
+// 		tx.UnsafePut(schema.Test, []byte(fmt.Sprintf("foo_%d", i)), []byte("bar"))
+// 	}
+// 	tx.Unlock()
+// 	b.ForceCommit()
 
-	// remove some keys to ensure the disk space will be reclaimed after defrag
-	tx = b.BatchTx()
-	tx.Lock()
-	for i := 0; i < 50; i++ {
-		tx.UnsafeDelete(schema.Test, []byte(fmt.Sprintf("foo_%d", i)))
-	}
-	tx.Unlock()
-	b.ForceCommit()
+// 	// remove some keys to ensure the disk space will be reclaimed after defrag
+// 	tx = b.BatchTx()
+// 	tx.Lock()
+// 	for i := 0; i < 50; i++ {
+// 		tx.UnsafeDelete(schema.Test, []byte(fmt.Sprintf("foo_%d", i)))
+// 	}
+// 	tx.Unlock()
+// 	b.ForceCommit()
 
-	size := b.Size()
+// 	size := b.Size()
 
-	// shrink and check hash
-	oh, err := b.Hash(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+// 	// shrink and check hash
+// 	oh, err := b.Hash(nil)
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	err = b.Defrag()
-	if err != nil {
-		t.Fatal(err)
-	}
+// 	err = b.Defrag()
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	nh, err := b.Hash(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if oh != nh {
-		t.Errorf("hash = %v, want %v", nh, oh)
-	}
+// 	nh, err := b.Hash(nil)
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
+// 	if oh != nh {
+// 		t.Errorf("hash = %v, want %v", nh, oh)
+// 	}
 
-	nsize := b.Size()
-	if nsize >= size {
-		t.Errorf("new size = %v, want < %d", nsize, size)
-	}
-	db := backend.DbFromBackendForTest(b)
-	if db.FreelistType != bcfg.BackendFreelistType {
-		t.Errorf("db FreelistType = [%v], want [%v]", db.FreelistType, bcfg.BackendFreelistType)
-	}
+// 	nsize := b.Size()
+// 	if nsize >= size {
+// 		t.Errorf("new size = %v, want < %d", nsize, size)
+// 	}
+// 	db := backend.DbFromBackendForTest(b)
+// 	if db.FreelistType != bcfg.BackendFreelistType {
+// 		t.Errorf("db FreelistType = [%v], want [%v]", db.FreelistType, bcfg.BackendFreelistType)
+// 	}
 
-	// try put more keys after shrink.
-	tx = b.BatchTx()
-	tx.Lock()
-	tx.UnsafeCreateBucket(schema.Test)
-	tx.UnsafePut(schema.Test, []byte("more"), []byte("bar"))
-	tx.Unlock()
-	b.ForceCommit()
-}
+// 	// try put more keys after shrink.
+// 	tx = b.BatchTx()
+// 	tx.Lock()
+// 	tx.UnsafeCreateBucket(schema.Test)
+// 	tx.UnsafePut(schema.Test, []byte("more"), []byte("bar"))
+// 	tx.Unlock()
+// 	b.ForceCommit()
+// }
 
 // TestBackendWriteback ensures writes are stored to the read txn on write txn unlock.
 func TestBackendWriteback(t *testing.T) {

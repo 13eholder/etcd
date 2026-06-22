@@ -14,7 +14,7 @@
 
 package backend
 
-import bolt "go.etcd.io/bbolt"
+import bolt "github.com/13eholder/vmbolt"
 
 func DbFromBackendForTest(b Backend) *bolt.DB {
 	return b.(*backend).db

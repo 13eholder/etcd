@@ -18,7 +18,7 @@ import (
 	"math"
 	"sync"
 
-	bolt "go.etcd.io/bbolt"
+	bolt "github.com/13eholder/vmbolt"
 )
 
 // IsSafeRangeBucket is a hack to avoid inadvertently reading duplicate keys;
