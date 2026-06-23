@@ -52,7 +52,7 @@ require (
 )
 
 require (
-	github.com/13eholder/vmbolt v0.1.2 // indirect
+	github.com/13eholder/vmbolt v0.2.1 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bgentry/speakeasy v0.2.0 // indirect
