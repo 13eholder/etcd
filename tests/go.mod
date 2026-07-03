@@ -15,6 +15,7 @@ replace (
 )
 
 require (
+	github.com/13eholder/vmbolt v0.3.1
 	github.com/anishathalye/porcupine v0.1.4
 	github.com/coreos/go-semver v0.3.1
 	github.com/golang/protobuf v1.5.4
@@ -27,7 +28,6 @@ require (
 	github.com/prometheus/common v0.62.0
 	github.com/soheilhy/cmux v0.1.5
 	github.com/stretchr/testify v1.10.0
-	go.etcd.io/bbolt v1.4.3
 	go.etcd.io/etcd/api/v3 v3.6.5
 	go.etcd.io/etcd/client/pkg/v3 v3.6.5
 	go.etcd.io/etcd/client/v2 v2.305.20
@@ -52,7 +52,6 @@ require (
 )
 
 require (
-	github.com/13eholder/vmbolt v0.2.1 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bgentry/speakeasy v0.2.0 // indirect

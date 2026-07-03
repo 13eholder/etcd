@@ -5,6 +5,7 @@ go 1.24
 toolchain go1.24.7
 
 require (
+	github.com/13eholder/vmbolt v0.3.1
 	github.com/coreos/go-semver v0.3.1
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/dustin/go-humanize v1.0.1
@@ -25,7 +26,6 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20201229170055-e5319fda7802
 	github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2
-	go.etcd.io/bbolt v1.4.3
 	go.etcd.io/etcd/api/v3 v3.6.5
 	go.etcd.io/etcd/client/pkg/v3 v3.6.5
 	go.etcd.io/etcd/client/v3 v3.6.5
@@ -48,7 +48,6 @@ require (
 )
 
 require (
-	github.com/13eholder/vmbolt v0.2.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

@@ -21,7 +21,7 @@ replace (
 )
 
 require (
-	github.com/13eholder/vmbolt v0.2.1
+	github.com/13eholder/vmbolt v0.3.1
 	github.com/coreos/go-semver v0.3.1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/olekukonko/tablewriter v0.0.5
