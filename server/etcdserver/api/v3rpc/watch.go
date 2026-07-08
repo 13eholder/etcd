@@ -32,6 +32,7 @@ import (
 	"go.etcd.io/etcd/server/v3/auth"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/apply"
+	"go.etcd.io/etcd/server/v3/storage/eventstore"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
 )
 
@@ -45,9 +46,10 @@ type watchServer struct {
 
 	maxRequestBytes uint
 
-	sg        apply.RaftStatusGetter
-	watchable mvcc.WatchableKV
-	ag        AuthGetter
+	sg         apply.RaftStatusGetter
+	watchable  mvcc.WatchableKV
+	eventStore *eventstore.EventStore
+	ag         AuthGetter
 }
 
 // NewWatchServer returns a new watch server.
@@ -60,9 +62,10 @@ func NewWatchServer(s *etcdserver.EtcdServer) pb.WatchServer {
 
 		maxRequestBytes: s.Cfg.MaxRequestBytesWithOverhead(),
 
-		sg:        s,
-		watchable: s.Watchable(),
-		ag:        s,
+		sg:         s,
+		watchable:  s.Watchable(),
+		eventStore: s.EventStore(),
+		ag:         s,
 	}
 	if srv.lg == nil {
 		srv.lg = zap.NewNop()
@@ -128,15 +131,17 @@ type serverWatchStream struct {
 
 	maxRequestBytes uint
 
-	sg        apply.RaftStatusGetter
-	watchable mvcc.WatchableKV
-	ag        AuthGetter
+	sg         apply.RaftStatusGetter
+	watchable  mvcc.WatchableKV
+	eventStore *eventstore.EventStore
+	ag         AuthGetter
 
-	gRPCStream  pb.Watch_WatchServer
-	watchStream mvcc.WatchStream
-	ctrlStream  chan *pb.WatchResponse
+	gRPCStream       pb.Watch_WatchServer
+	watchStream      mvcc.WatchStream
+	eventWatchStream eventstore.WatchStream
+	ctrlStream       chan *pb.WatchResponse
 
-	// mu protects progress, prevKV, fragment
+	// mu protects progress, prevKV, fragment, eventWatchIDs
 	mu sync.RWMutex
 	// tracks the watchID that stream might need to send progress to
 	// TODO: combine progress and prevKV into a single struct?
@@ -145,6 +150,9 @@ type serverWatchStream struct {
 	prevKV map[mvcc.WatchID]bool
 	// records fragmented watch IDs
 	fragment map[mvcc.WatchID]bool
+	// records watch IDs registered against eventStore rather than watchStream,
+	// so Cancel routes to the right backing store.
+	eventWatchIDs map[mvcc.WatchID]bool
 
 	// closec indicates the stream is closed.
 	closec chan struct{}
@@ -162,18 +170,21 @@ func (ws *watchServer) Watch(stream pb.Watch_WatchServer) (err error) {
 
 		maxRequestBytes: ws.maxRequestBytes,
 
-		sg:        ws.sg,
-		watchable: ws.watchable,
-		ag:        ws.ag,
+		sg:         ws.sg,
+		watchable:  ws.watchable,
+		eventStore: ws.eventStore,
+		ag:         ws.ag,
 
-		gRPCStream:  stream,
-		watchStream: ws.watchable.NewWatchStream(),
+		gRPCStream:       stream,
+		watchStream:      ws.watchable.NewWatchStream(),
+		eventWatchStream: ws.eventStore.NewWatchStream(),
 		// chan for sending control response like watcher created and canceled.
 		ctrlStream: make(chan *pb.WatchResponse, ctrlStreamBufLen),
 
-		progress: make(map[mvcc.WatchID]bool),
-		prevKV:   make(map[mvcc.WatchID]bool),
-		fragment: make(map[mvcc.WatchID]bool),
+		progress:      make(map[mvcc.WatchID]bool),
+		prevKV:        make(map[mvcc.WatchID]bool),
+		fragment:      make(map[mvcc.WatchID]bool),
+		eventWatchIDs: make(map[mvcc.WatchID]bool),
 
 		closec: make(chan struct{}),
 	}
@@ -305,9 +316,18 @@ func (sws *serverWatchStream) recvLoop() error {
 
 			filters := FiltersFromRequest(creq)
 
-			id, err := sws.watchStream.Watch(mvcc.WatchID(creq.WatchId), creq.Key, creq.RangeEnd, creq.StartRevision, filters...)
+			var id mvcc.WatchID
+			if eventstore.IsEventKey(creq.Key) {
+				eid, everr := sws.eventWatchStream.Watch(eventstore.WatchID(creq.WatchId), creq.Key, creq.RangeEnd)
+				id, err = mvcc.WatchID(eid), everr
+			} else {
+				id, err = sws.watchStream.Watch(mvcc.WatchID(creq.WatchId), creq.Key, creq.RangeEnd, creq.StartRevision, filters...)
+			}
 			if err == nil {
 				sws.mu.Lock()
+				if eventstore.IsEventKey(creq.Key) {
+					sws.eventWatchIDs[id] = true
+				}
 				if creq.ProgressNotify {
 					sws.progress[id] = true
 				}
@@ -322,8 +342,12 @@ func (sws *serverWatchStream) recvLoop() error {
 				id = clientv3.InvalidWatchID
 			}
 
+			rev := sws.watchStream.Rev()
+			if eventstore.IsEventKey(creq.Key) {
+				rev = sws.eventWatchStream.Rev()
+			}
 			wr := &pb.WatchResponse{
-				Header:   sws.newResponseHeader(sws.watchStream.Rev()),
+				Header:   sws.newResponseHeader(rev),
 				WatchId:  int64(id),
 				Created:  true,
 				Canceled: err != nil,
@@ -340,10 +364,24 @@ func (sws *serverWatchStream) recvLoop() error {
 		case *pb.WatchRequest_CancelRequest:
 			if uv.CancelRequest != nil {
 				id := uv.CancelRequest.WatchId
-				err := sws.watchStream.Cancel(mvcc.WatchID(id))
+
+				sws.mu.RLock()
+				isEvent := sws.eventWatchIDs[mvcc.WatchID(id)]
+				sws.mu.RUnlock()
+
+				var err error
+				if isEvent {
+					err = sws.eventWatchStream.Cancel(eventstore.WatchID(id))
+				} else {
+					err = sws.watchStream.Cancel(mvcc.WatchID(id))
+				}
 				if err == nil {
+					rev := sws.watchStream.Rev()
+					if isEvent {
+						rev = sws.eventWatchStream.Rev()
+					}
 					wr := &pb.WatchResponse{
-						Header:   sws.newResponseHeader(sws.watchStream.Rev()),
+						Header:   sws.newResponseHeader(rev),
 						WatchId:  id,
 						Canceled: true,
 					}
@@ -357,6 +395,7 @@ func (sws *serverWatchStream) recvLoop() error {
 					delete(sws.progress, mvcc.WatchID(id))
 					delete(sws.prevKV, mvcc.WatchID(id))
 					delete(sws.fragment, mvcc.WatchID(id))
+					delete(sws.eventWatchIDs, mvcc.WatchID(id))
 					sws.mu.Unlock()
 				}
 			}
@@ -387,9 +426,11 @@ func (sws *serverWatchStream) sendLoop() {
 
 	defer func() {
 		progressTicker.Stop()
-		// drain the chan to clean up pending events
+		// drain the chans to clean up pending events
 		for ws := range sws.watchStream.Chan() {
 			mvcc.ReportEventReceived(len(ws.Events))
+		}
+		for range sws.eventWatchStream.Chan() {
 		}
 		for _, wrs := range pending {
 			for _, ws := range wrs {
@@ -472,6 +513,66 @@ func (sws *serverWatchStream) sendLoop() {
 			if len(evs) > 0 && sws.progress[wresp.WatchID] {
 				// elide next progress update if sent a key update
 				sws.progress[wresp.WatchID] = false
+			}
+			sws.mu.Unlock()
+
+		case ewresp, ok := <-sws.eventWatchStream.Chan():
+			if !ok {
+				return
+			}
+
+			wid := mvcc.WatchID(ewresp.WatchID)
+
+			evs := ewresp.Events
+			events := make([]*mvccpb.Event, len(evs))
+			sws.mu.RLock()
+			needPrevKV := sws.prevKV[wid]
+			sws.mu.RUnlock()
+			for i := range evs {
+				events[i] = &evs[i]
+				if !needPrevKV {
+					events[i].PrevKv = nil
+				}
+			}
+
+			wr := &pb.WatchResponse{
+				Header:  sws.newResponseHeader(sws.eventWatchStream.Rev()),
+				WatchId: int64(ewresp.WatchID),
+				Events:  events,
+			}
+
+			if _, okID := ids[wid]; !okID {
+				// buffer if id not yet announced
+				pending[wid] = append(pending[wid], wr)
+				continue
+			}
+
+			mvcc.ReportEventReceived(len(evs))
+
+			sws.mu.RLock()
+			fragmented, ok := sws.fragment[wid]
+			sws.mu.RUnlock()
+
+			var serr error
+			if !fragmented && !ok {
+				serr = sws.gRPCStream.Send(wr)
+			} else {
+				serr = sendFragments(wr, sws.maxRequestBytes, sws.gRPCStream.Send)
+			}
+
+			if serr != nil {
+				if isClientCtxErr(sws.gRPCStream.Context().Err(), serr) {
+					sws.lg.Debug("failed to send watch response to gRPC stream", zap.Error(serr))
+				} else {
+					sws.lg.Warn("failed to send watch response to gRPC stream", zap.Error(serr))
+					streamFailures.WithLabelValues("send", "watch").Inc()
+				}
+				return
+			}
+
+			sws.mu.Lock()
+			if len(evs) > 0 && sws.progress[wid] {
+				sws.progress[wid] = false
 			}
 			sws.mu.Unlock()
 
@@ -579,6 +680,7 @@ func sendFragments(
 
 func (sws *serverWatchStream) close() {
 	sws.watchStream.Close()
+	sws.eventWatchStream.Close()
 	close(sws.closec)
 	sws.wg.Wait()
 }

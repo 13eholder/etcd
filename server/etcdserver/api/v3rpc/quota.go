@@ -22,6 +22,7 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/storage"
+	"go.etcd.io/etcd/server/v3/storage/eventstore"
 )
 
 type quotaKVServer struct {
@@ -58,6 +59,11 @@ func NewQuotaKVServer(s *etcdserver.EtcdServer) pb.KVServer {
 }
 
 func (s *quotaKVServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
+	// Event keys bypass BoltDB entirely (see EtcdServer.Put), so a NOSPACE
+	// alarm caused by unrelated MVCC/BoltDB growth must not block them.
+	if eventstore.IsEventKey(r.Key) {
+		return s.KVServer.Put(ctx, r)
+	}
 	if err := s.qa.check(ctx, r); err != nil {
 		return nil, err
 	}

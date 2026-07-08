@@ -38,6 +38,7 @@ import (
 	"go.etcd.io/etcd/server/v3/features"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/lease/leasehttp"
+	"go.etcd.io/etcd/server/v3/storage/eventstore"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/raft/v3"
 )
@@ -101,7 +102,34 @@ type Authenticator interface {
 	RoleList(ctx context.Context, r *pb.AuthRoleListRequest) (*pb.AuthRoleListResponse, error)
 }
 
+// eventAuthInfoFromCtx behaves like AuthInfoFromCtx but never returns a nil
+// *auth.AuthInfo: IsPutPermitted/IsRangePermitted/IsDeleteRangePermitted
+// dereference it unconditionally, so callers that bypass the normal
+// raftRequest/apply path (i.e. event keys) must guard against a nil
+// AuthInfo themselves the way isWatchPermitted does for Watch.
+func (s *EtcdServer) eventAuthInfoFromCtx(ctx context.Context) (*auth.AuthInfo, error) {
+	authInfo, err := s.AuthInfoFromCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if authInfo == nil {
+		authInfo = &auth.AuthInfo{}
+	}
+	return authInfo, nil
+}
+
 func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
+	if eventstore.IsEventKey(r.Key) {
+		authInfo, err := s.eventAuthInfoFromCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.authStore.IsRangePermitted(authInfo, r.Key, r.RangeEnd); err != nil {
+			return nil, err
+		}
+		return s.eventStore.Range(r)
+	}
+
 	trace := traceutil.New("range",
 		s.Logger(),
 		traceutil.Field{Key: "range_begin", Value: string(r.Key)},
@@ -142,6 +170,17 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 }
 
 func (s *EtcdServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
+	if eventstore.IsEventKey(r.Key) {
+		authInfo, err := s.eventAuthInfoFromCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.authStore.IsPutPermitted(authInfo, r.Key); err != nil {
+			return nil, err
+		}
+		return s.eventStore.Put(r)
+	}
+
 	ctx = context.WithValue(ctx, traceutil.StartTimeKey{}, time.Now())
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{Put: r})
 	if err != nil {
@@ -151,6 +190,17 @@ func (s *EtcdServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse
 }
 
 func (s *EtcdServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
+	if eventstore.IsEventKey(r.Key) {
+		authInfo, err := s.eventAuthInfoFromCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.authStore.IsDeleteRangePermitted(authInfo, r.Key, r.RangeEnd); err != nil {
+			return nil, err
+		}
+		return s.eventStore.DeleteRange(r)
+	}
+
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{DeleteRange: r})
 	if err != nil {
 		return nil, err
@@ -801,6 +851,9 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 
 // Watchable returns a watchable interface attached to the etcdserver.
 func (s *EtcdServer) Watchable() mvcc.WatchableKV { return s.KV() }
+
+// EventStore returns the EventStore backing Event keys (see eventstore.IsEventKey).
+func (s *EtcdServer) EventStore() *eventstore.EventStore { return s.eventStore }
 
 func (s *EtcdServer) linearizableReadLoop() {
 	for {

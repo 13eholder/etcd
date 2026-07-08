@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/http"
 	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -70,6 +71,7 @@ import (
 	"go.etcd.io/etcd/server/v3/lease/leasehttp"
 	serverstorage "go.etcd.io/etcd/server/v3/storage"
 	"go.etcd.io/etcd/server/v3/storage/backend"
+	"go.etcd.io/etcd/server/v3/storage/eventstore"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"go.etcd.io/raft/v3"
@@ -259,6 +261,7 @@ type EtcdServer struct {
 
 	kv         mvcc.WatchableKV
 	lessor     lease.Lessor
+	eventStore *eventstore.EventStore
 	bemu       sync.RWMutex
 	be         backend.Backend
 	beHooks    *serverstorage.BackendHooks
@@ -361,6 +364,12 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		ExpiredLeasesRetryInterval: srv.Cfg.ReqTimeout(),
 	})
 
+	srv.eventStore, err = eventstore.New(filepath.Join(cfg.MemberDir(), "event-bitcask"), srv.lessor)
+	if err != nil {
+		cfg.Logger.Error("failed to create event store", zap.Error(err))
+		return nil, err
+	}
+
 	tp, err := auth.NewTokenProvider(cfg.Logger, cfg.AuthToken,
 		func(index uint64) <-chan struct{} {
 			return srv.applyWait.Wait(index)
@@ -387,6 +396,9 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		// resumed compactions to fail with closed tx errors
 		if err != nil {
 			newSrv.kv.Close()
+			if newSrv.eventStore != nil {
+				newSrv.eventStore.Close()
+			}
 		}
 	}()
 	if num := cfg.AutoCompactionRetention; num != 0 {
@@ -962,6 +974,9 @@ func (s *EtcdServer) Cleanup() {
 	}
 	if s.kv != nil {
 		s.kv.Close()
+	}
+	if s.eventStore != nil {
+		s.eventStore.Close()
 	}
 	if s.authStore != nil {
 		s.authStore.Close()
