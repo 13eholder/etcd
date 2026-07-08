@@ -32,8 +32,8 @@ K8S API Server PUT /registry/events/...
 |---|---|
 | 重启恢复 | **不需要**。启动时清空 Bitcask 数据目录，全新开始；不扫描历史文件、不重建索引。语义上仍是 ephemeral，只是运行期用磁盘做数据本体存储以省内存 |
 | 跨节点一致性 | **单节点本地存储，不复制**。不同 etcd member 上 Event 数据可能不一致，与原方案定位一致（K8s Event 本身 best-effort） |
-| TTL | **Bitcask 记录级过期**。写入时算出 `expireAt` 存入记录，读取时过滤已过期记录，merge 时物理回收 |
-| TTL 数值来源 | **沿用 LeaseGrant，但不 Attach**。LeaseGrant/Revoke 仍走 Raft/BoltDB 正常记账；Put 时查 `lessor.Lookup(leaseID)` 拿剩余 TTL 算出 `expireAt`，不调用 `le.Attach()` |
+| TTL | **DB 级全局固定 TTL（仿 Riak bitcask 的 bucket 级过期）**。磁盘只存 `tstamp`（写入时间），过期判断为 `now - tstamp >= TTL`；不再为每条记录单独存绝对到期时间 |
+| TTL 数值来源 | **不再查 lessor**。`EventStore` 用一个固定常量 `DefaultTTL`（1 小时，对应 K8s Event 实际约定的 TTL）作为全 store 统一 TTL，Put 时不查询、不依赖具体 leaseID 的剩余时间。LeaseGrant/Revoke 仍走 Raft/BoltDB 正常记账，但 EventStore 完全不关心它们 |
 | Watch 历史 | **只做实时通知**，不保留多版本、不支持 `start_revision` 重放 |
 | 内存索引结构 | **B-tree（google/btree）有序索引**，而非教科书式 hash map，用来支撑 `Range` 前缀/区间扫描 |
 
@@ -44,11 +44,20 @@ K8S API Server PUT /registry/events/...
 顺序追加写入 active file，每条记录：
 
 ```
-| crc32(4B) | tstamp(8B) | expireAt(8B, 0=永不过期) | keySize(4B) | valueSize(4B) | key | value |
+| tstamp(8B) | keySize(4B) | valueSize(4B) | key | value |
 ```
 
-因为不需要崩溃恢复、也不需要历史版本，**不需要 tombstone 记录**：Delete 直接从 B-tree 摘除索引项即可，
-旧文件里对应的字节等 merge 时按"B-tree 里还有没有指向它的活记录"来判定是否可回收。
+没有 CRC、没有单独的 `expireAt` 字段、也没有 tombstone 记录：
+
+- **不需要 CRC**：不做崩溃恢复/日志重放，没有谁会去校验一条可能写坏的记录。
+- **不单独存 expireAt**：过期改成"DB 级全局 TTL + 每条记录的写入时间 `tstamp`"，`now - tstamp >= TTL` 即视为过期，
+  比每条记录各自存一个绝对到期时间更省空间（8 字节直接省掉），代价是所有 key 共用同一个 TTL，不能再各自配置
+  不同的过期时长——这对 K8s Event 场景是成立的，因为 K8s 本身就是所有 Event 统一用 1 小时 TTL。
+- **不需要 tombstone**：Delete 直接从 B-tree 摘除索引项即可，旧文件里对应的字节等 merge 时按"B-tree 里还有没有
+  指向它的活记录"来判定是否可回收。
+
+**关键约束**：`tstamp` 必须是记录最初的写入时间，且在 merge 重写时必须原样保留、不能改成 merge 发生的时间——
+否则每次 merge 都会重置过期时钟，记录就永远不会过期了。
 
 ### 文件布局
 
@@ -70,7 +79,7 @@ type keydirEntry struct {
     fileID    uint32
     valuePos  int64
     valueSize uint32
-    expireAt  int64 // unix nano, 0 = 永不过期
+    tstamp    int64 // unix nano 写入时间；过期 = DB 级 TTL 之后
 }
 ```
 
@@ -87,8 +96,8 @@ type keydirEntry struct {
 ### 过期与删除
 
 - `DeleteRange`：直接从 B-tree 摘除匹配的索引项，不写任何磁盘记录。
-- TTL 过期：读取（Get/Range）时惰性检查 `expireAt < now`，过期则视为不存在并顺手摘除索引；另起一个后台定时
-  任务主动扫描 B-tree 清理已过期但长期未被读取的 key，避免索引/磁盘空间被"僵尸" Event 占用。
+- TTL 过期：读取（Get/Range）时惰性检查 `now - tstamp >= TTL`，过期则视为不存在并顺手摘除索引；另起一个后台
+  定时任务主动扫描 B-tree 清理已过期但长期未被读取的 key，避免索引/磁盘空间被"僵尸" Event 占用。
 
 ### Merge / Compaction
 
@@ -100,19 +109,22 @@ type keydirEntry struct {
 
 ## API
 
-- `Put(key, value, leaseID)` — 内部据 leaseID 换算 `expireAt`
-- `Get(key)` / `Range(prefix, limit)`
-- `DeleteRange(startKey, endKey)`
-- `Watch(prefix)` — 实时 fan-out，不做历史重放
+- `bitcask.DB.Put(key, value)` — 不再接受 expireAt/TTL 参数，过期由 `Options.TTL`（DB 级全局值）统一控制
+- `bitcask.DB.Get(key)` / `Range(prefix, limit)`
+- `bitcask.DB.DeleteRange(startKey, endKey)`
+- `EventStore.Watch(prefix)` — 实时 fan-out，不做历史重放
 
 ## Lease 交互
 
-- Put 带 leaseID：`EventStore.Put` 调 `lessor.Lookup(leaseID)` 拿剩余 TTL，算出 `expireAt` 写入 Bitcask 记录，
-  不调用 `le.Attach()`。
+- `EventStore.Put` **不再查询 lessor**：Event 的过期时间统一是"写入时刻 + `DefaultTTL`（1 小时）"，与请求携带
+  的具体 leaseID、该 lease 的剩余 TTL 完全无关。`r.Lease` 只是原样存进 `mvccpb.KeyValue.Lease` 字段，供客户端
+  读回时看到自己填的值，不做任何校验（不存在的 leaseID 也会被接受）。
 - LeaseGrant/LeaseRevoke 不拦截，按原路径走 Raft → lessor → BoltDB。lease 到期后 `Revoke` 因为没有 attach 的
   key，`RangeDeleter` 是空操作，无副作用。
 - 代价：每个 Event 仍对应一次 LeaseGrant 落 Raft/BoltDB（原 ringbuffer 方案已指出的"空 lease"开销），但相比
   Event Put 本身走 Raft/MVCC/BoltDB，这个代价小得多。
+- 如果某个 Event 的 lease TTL 被 K8s 设置成不是 1 小时，这里不会跟随——过期时间始终按 `DefaultTTL` 走，这是
+  用"全局统一、更省空间"换来的已知限制。
 
 ## 实现步骤
 
@@ -123,7 +135,7 @@ type keydirEntry struct {
    - `merge.go`：后台 merge/compaction
 2. **新增 `server/storage/eventstore/event_store.go`**：在原方案基础上，内部存储由 `ringBuffer` 换成 `bitcask.DB`
    - 维护独立局部 revision（仅用于响应头，不做历史 Watch）
-   - Put 时接受 leaseID，查询 lessor 计算 `expireAt`
+   - `New()` 不再需要 `lessor` 参数；`bitcask.Open` 时传入 `Options{TTL: DefaultTTL}`（1 小时）
    - 维护 watcher 列表，写入时 fan-out（不变）
 3. **`server/etcdserver/api/v3rpc/quota.go`**：不变，同原方案
 4. **`server/etcdserver/v3_server.go`**：不变，同原方案；`EventStore` 字段类型换底层实现

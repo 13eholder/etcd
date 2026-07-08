@@ -50,6 +50,12 @@ type Options struct {
 	// MergeInterval is how often the background goroutine purges expired
 	// keys and compacts sealed data files. Default: 10 minutes.
 	MergeInterval time.Duration
+	// TTL is a single store-wide expiry applied to every key, measured from
+	// each record's write time (its on-disk tstamp), independent of any
+	// per-key deadline. This mirrors Riak bitcask's bucket-level expiry
+	// rather than a per-record absolute deadline. Zero (the default) means
+	// keys never expire.
+	TTL time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -64,9 +70,8 @@ func (o Options) withDefaults() Options {
 
 // Entry is a single key/value pair returned by Range or DeleteRange.
 type Entry struct {
-	Key      []byte
-	Value    []byte
-	ExpireAt int64 // unix nano; 0 means never
+	Key   []byte
+	Value []byte
 }
 
 // DB is a single Bitcask-style key/value store rooted at one directory.
@@ -150,11 +155,12 @@ func (db *DB) allocFileID() uint32 {
 	return db.nextFileID
 }
 
-// Put writes key/value, overwriting any previous value for key. expireAt is
-// a unix-nano deadline after which the key is treated as absent; 0 means the
-// key never expires.
-func (db *DB) Put(key, value []byte, expireAt int64) error {
-	rec, valueOff := encodeRecord(time.Now().UnixNano(), expireAt, key, value)
+// Put writes key/value, overwriting any previous value for key. The record
+// is timestamped with the current write time, which is what DB.opt.TTL (if
+// set) measures expiry from.
+func (db *DB) Put(key, value []byte) error {
+	tstamp := time.Now().UnixNano()
+	rec, valueOff := encodeRecord(tstamp, key, value)
 
 	db.writeMu.Lock()
 	if db.activeSize+int64(len(rec)) > db.opt.MaxFileSize {
@@ -178,30 +184,30 @@ func (db *DB) Put(key, value []byte, expireAt int64) error {
 		fileID:    fileID,
 		valuePos:  pos + int64(valueOff),
 		valueSize: uint32(len(value)),
-		expireAt:  expireAt,
+		tstamp:    tstamp,
 	})
 	return nil
 }
 
 // Get returns the current value for key, if present and not expired.
-func (db *DB) Get(key []byte) (value []byte, expireAt int64, ok bool) {
+func (db *DB) Get(key []byte) (value []byte, ok bool) {
 	e, found := db.kd.get(string(key))
 	if !found {
-		return nil, 0, false
+		return nil, false
 	}
 	if db.expired(e) {
 		db.kd.delete(e.key)
-		return nil, 0, false
+		return nil, false
 	}
 	val, err := db.readValue(e)
 	if err != nil {
-		return nil, 0, false
+		return nil, false
 	}
-	return val, e.expireAt, true
+	return val, true
 }
 
 func (db *DB) expired(e *keydirEntry) bool {
-	return e.expireAt != 0 && e.expireAt <= time.Now().UnixNano()
+	return db.opt.TTL > 0 && time.Now().UnixNano()-e.tstamp >= int64(db.opt.TTL)
 }
 
 func (db *DB) readValue(e *keydirEntry) ([]byte, error) {
@@ -264,7 +270,7 @@ func (db *DB) Range(startKey, endKey []byte, limit int) []Entry {
 		if err != nil {
 			return true
 		}
-		out = append(out, Entry{Key: []byte(e.key), Value: val, ExpireAt: e.expireAt})
+		out = append(out, Entry{Key: []byte(e.key), Value: val})
 		return limit <= 0 || len(out) < limit
 	})
 
@@ -293,7 +299,7 @@ func (db *DB) DeleteRange(startKey, endKey []byte) []Entry {
 		if err != nil {
 			continue
 		}
-		deleted = append(deleted, Entry{Key: []byte(e.key), Value: val, ExpireAt: e.expireAt})
+		deleted = append(deleted, Entry{Key: []byte(e.key), Value: val})
 	}
 	return deleted
 }

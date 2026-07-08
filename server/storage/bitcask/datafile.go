@@ -22,13 +22,19 @@ import (
 
 // On-disk record layout (all integers big-endian):
 //
-//	tstamp(8) | expireAt(8) | keySize(4) | valueSize(4) | key | value
+//	tstamp(8) | keySize(4) | valueSize(4) | key | value
+//
+// tstamp is the record's original write time (preserved verbatim across
+// merges, see merge.go) and is the sole input to expiry: a record is
+// treated as absent once DB.opt.TTL has elapsed since tstamp, mirroring
+// Riak bitcask's bucket-level expiry rather than storing a per-record
+// absolute deadline.
 //
 // There is no checksum and no tombstone marker: this engine never rebuilds
 // its keydir from the log (data directory is wiped on every Open), so
 // nothing ever reads the log for anything other than the value bytes a live
 // keydir entry already points at.
-const headerSize = 24
+const headerSize = 16
 
 func dataFileName(dir string, fileID uint32) string {
 	return filepath.Join(dir, fmt.Sprintf("%09d.data", fileID))
@@ -36,12 +42,11 @@ func dataFileName(dir string, fileID uint32) string {
 
 // encodeRecord serializes one record and reports the offset within it where
 // the value bytes begin (== headerSize+len(key)).
-func encodeRecord(tstamp, expireAt int64, key, value []byte) (buf []byte, valueOff int) {
+func encodeRecord(tstamp int64, key, value []byte) (buf []byte, valueOff int) {
 	buf = make([]byte, headerSize+len(key)+len(value))
 	binary.BigEndian.PutUint64(buf[0:8], uint64(tstamp))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(expireAt))
-	binary.BigEndian.PutUint32(buf[16:20], uint32(len(key)))
-	binary.BigEndian.PutUint32(buf[20:24], uint32(len(value)))
+	binary.BigEndian.PutUint32(buf[8:12], uint32(len(key)))
+	binary.BigEndian.PutUint32(buf[12:16], uint32(len(value)))
 	copy(buf[headerSize:], key)
 	copy(buf[headerSize+len(key):], value)
 	return buf, headerSize + len(key)

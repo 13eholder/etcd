@@ -16,7 +16,6 @@ package bitcask
 
 import (
 	"os"
-	"time"
 )
 
 // merge reclaims disk space held by sealed (non-active) data files: it
@@ -68,7 +67,10 @@ func (db *DB) merge() error {
 		if err != nil {
 			continue
 		}
-		rec, valueOff := encodeRecord(time.Now().UnixNano(), e.expireAt, []byte(k), val)
+		// Preserve the original tstamp: since expiry is now measured as
+		// TTL-since-tstamp, restamping to time.Now() here would reset every
+		// record's expiry clock on each merge and keys would never expire.
+		rec, valueOff := encodeRecord(e.tstamp, []byte(k), val)
 		if _, err := out.Write(rec); err != nil {
 			out.Close()
 			return err
@@ -78,7 +80,7 @@ func (db *DB) merge() error {
 			fileID:    newID,
 			valuePos:  offset + int64(valueOff),
 			valueSize: e.valueSize,
-			expireAt:  e.expireAt,
+			tstamp:    e.tstamp,
 		}
 		db.kd.compareAndSwap(e, newEntry)
 		offset += int64(len(rec))

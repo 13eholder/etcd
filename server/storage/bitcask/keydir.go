@@ -28,7 +28,7 @@ type keydirEntry struct {
 	fileID    uint32
 	valuePos  int64
 	valueSize uint32
-	expireAt  int64 // unix nano; 0 means the entry never expires
+	tstamp    int64 // unix nano write time; expiry is DB.opt.TTL after this
 }
 
 // keydir is the ordered in-memory index (key -> keydirEntry) backing a DB.

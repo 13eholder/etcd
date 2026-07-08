@@ -33,50 +33,57 @@ func openTestDB(t *testing.T, opt Options) *DB {
 func TestPutGet(t *testing.T) {
 	db := openTestDB(t, Options{})
 
-	if err := db.Put([]byte("k1"), []byte("v1"), 0); err != nil {
+	if err := db.Put([]byte("k1"), []byte("v1")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	val, expireAt, ok := db.Get([]byte("k1"))
-	if !ok || string(val) != "v1" || expireAt != 0 {
-		t.Fatalf("Get = %q, %d, %v; want v1, 0, true", val, expireAt, ok)
+	val, ok := db.Get([]byte("k1"))
+	if !ok || string(val) != "v1" {
+		t.Fatalf("Get = %q, %v; want v1, true", val, ok)
 	}
 
 	// overwrite
-	if err := db.Put([]byte("k1"), []byte("v2"), 0); err != nil {
+	if err := db.Put([]byte("k1"), []byte("v2")); err != nil {
 		t.Fatalf("Put overwrite: %v", err)
 	}
-	val, _, ok = db.Get([]byte("k1"))
+	val, ok = db.Get([]byte("k1"))
 	if !ok || string(val) != "v2" {
 		t.Fatalf("Get after overwrite = %q, %v; want v2, true", val, ok)
 	}
 
-	if _, _, ok := db.Get([]byte("missing")); ok {
+	if _, ok := db.Get([]byte("missing")); ok {
 		t.Fatalf("Get(missing) = true; want false")
 	}
 }
 
 func TestDelete(t *testing.T) {
 	db := openTestDB(t, Options{})
-	db.Put([]byte("k1"), []byte("v1"), 0)
+	db.Put([]byte("k1"), []byte("v1"))
 	db.Delete([]byte("k1"))
-	if _, _, ok := db.Get([]byte("k1")); ok {
+	if _, ok := db.Get([]byte("k1")); ok {
 		t.Fatalf("Get after Delete = true; want false")
 	}
 }
 
 func TestExpiry(t *testing.T) {
-	db := openTestDB(t, Options{})
+	db := openTestDB(t, Options{TTL: 50 * time.Millisecond})
 
-	past := time.Now().Add(-time.Second).UnixNano()
-	db.Put([]byte("expired"), []byte("v"), past)
-	if _, _, ok := db.Get([]byte("expired")); ok {
-		t.Fatalf("Get(expired) = true; want false")
+	db.Put([]byte("k1"), []byte("v"))
+	if _, ok := db.Get([]byte("k1")); !ok {
+		t.Fatalf("Get(k1) right after Put = false; want true")
 	}
 
-	future := time.Now().Add(time.Hour).UnixNano()
-	db.Put([]byte("alive"), []byte("v"), future)
-	if _, _, ok := db.Get([]byte("alive")); !ok {
-		t.Fatalf("Get(alive) = false; want true")
+	time.Sleep(80 * time.Millisecond)
+	if _, ok := db.Get([]byte("k1")); ok {
+		t.Fatalf("Get(k1) after TTL elapsed = true; want false")
+	}
+}
+
+func TestNoExpiryByDefault(t *testing.T) {
+	db := openTestDB(t, Options{}) // TTL: 0 (unset) means never expire
+	db.Put([]byte("k1"), []byte("v"))
+	time.Sleep(20 * time.Millisecond)
+	if _, ok := db.Get([]byte("k1")); !ok {
+		t.Fatalf("Get(k1) with TTL=0 = false; want true (never expires)")
 	}
 }
 
@@ -84,7 +91,7 @@ func TestRange(t *testing.T) {
 	db := openTestDB(t, Options{})
 	keys := []string{"a", "b", "c", "d", "e"}
 	for _, k := range keys {
-		db.Put([]byte(k), []byte("v-"+k), 0)
+		db.Put([]byte(k), []byte("v-"+k))
 	}
 
 	// single key
@@ -115,17 +122,17 @@ func TestRange(t *testing.T) {
 func TestDeleteRange(t *testing.T) {
 	db := openTestDB(t, Options{})
 	for _, k := range []string{"a", "b", "c"} {
-		db.Put([]byte(k), []byte("v-"+k), 0)
+		db.Put([]byte(k), []byte("v-"+k))
 	}
 
 	deleted := db.DeleteRange([]byte("a"), []byte("c"))
 	if len(deleted) != 2 {
 		t.Fatalf("DeleteRange len = %d; want 2", len(deleted))
 	}
-	if _, _, ok := db.Get([]byte("a")); ok {
+	if _, ok := db.Get([]byte("a")); ok {
 		t.Fatalf("Get(a) after DeleteRange = true; want false")
 	}
-	if _, _, ok := db.Get([]byte("c")); !ok {
+	if _, ok := db.Get([]byte("c")); !ok {
 		t.Fatalf("Get(c) after DeleteRange = false; want true")
 	}
 }
@@ -136,7 +143,7 @@ func TestFileRotationAndMerge(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key-%03d", i)
-		if err := db.Put([]byte(k), []byte("some-value-padding"), 0); err != nil {
+		if err := db.Put([]byte(k), []byte("some-value-padding")); err != nil {
 			t.Fatalf("Put %d: %v", i, err)
 		}
 	}
@@ -147,7 +154,7 @@ func TestFileRotationAndMerge(t *testing.T) {
 	// overwrite every key so all older files become fully dead
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key-%03d", i)
-		if err := db.Put([]byte(k), []byte("updated"), 0); err != nil {
+		if err := db.Put([]byte(k), []byte("updated")); err != nil {
 			t.Fatalf("Put(update) %d: %v", i, err)
 		}
 	}
@@ -158,9 +165,36 @@ func TestFileRotationAndMerge(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key-%03d", i)
-		val, _, ok := db.Get([]byte(k))
+		val, ok := db.Get([]byte(k))
 		if !ok || string(val) != "updated" {
 			t.Fatalf("Get(%s) after merge = %q, %v; want updated, true", k, val, ok)
 		}
+	}
+}
+
+// TestMergePreservesTstamp guards against restamping a record's write time
+// during merge: since expiry is TTL-since-tstamp, restamping to the merge
+// time would reset every surviving record's expiry clock and keys would
+// never expire as long as merge keeps running.
+func TestMergePreservesTstamp(t *testing.T) {
+	db := openTestDB(t, Options{MaxFileSize: 64, TTL: 150 * time.Millisecond})
+
+	db.Put([]byte("k1"), []byte("v1"))
+	// force a rotation so k1's file becomes sealed and eligible for merge
+	db.Put([]byte("k2"), []byte(make([]byte, 128)))
+
+	if db.activeID <= 1 {
+		t.Fatalf("activeID = %d; want > 1 (expected rotation)", db.activeID)
+	}
+	if err := db.merge(); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if _, ok := db.Get([]byte("k1")); !ok {
+		t.Fatalf("Get(k1) right after merge = false; want true (not yet expired)")
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := db.Get([]byte("k1")); ok {
+		t.Fatalf("Get(k1) after TTL elapsed post-merge = true; want false (merge must not reset tstamp)")
 	}
 }

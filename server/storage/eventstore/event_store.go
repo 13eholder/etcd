@@ -28,7 +28,6 @@ import (
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
-	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/storage/bitcask"
 )
 
@@ -36,6 +35,15 @@ import (
 // Raft/MVCC path. It matches the key prefix Kubernetes' apiserver uses for
 // Event objects.
 const KeyPrefix = "/registry/events/"
+
+// DefaultTTL is the store-wide expiry applied to every event key, measured
+// from each record's write time. It matches the TTL Kubernetes' apiserver
+// uses for Event objects (LeaseGrant(ttl=3600) before every Event Put), and
+// is applied uniformly instead of looking up each Put's actual lease: once a
+// key is written, its expiry no longer depends on that lease's state, so
+// LeaseGrant/Revoke for event keys are pure bookkeeping that this store
+// never has to consult.
+const DefaultTTL = time.Hour
 
 // IsEventKey reports whether key should be routed to the EventStore.
 func IsEventKey(key []byte) bool {
@@ -45,8 +53,7 @@ func IsEventKey(key []byte) bool {
 // EventStore serves Put/Range/DeleteRange/Watch for event keys against a
 // local bitcask.DB, bypassing Raft/MVCC/BoltDB entirely.
 type EventStore struct {
-	db     *bitcask.DB
-	lessor lease.Lessor
+	db *bitcask.DB
 
 	rev int64 // monotonically increasing local revision, atomic
 
@@ -54,15 +61,14 @@ type EventStore struct {
 }
 
 // New opens an EventStore rooted at dir (any previous contents are wiped,
-// see bitcask.Open) using lessor to resolve lease TTLs for Put.
-func New(dir string, lessor lease.Lessor) (*EventStore, error) {
-	db, err := bitcask.Open(dir, bitcask.Options{})
+// see bitcask.Open). Every key expires DefaultTTL after it is written.
+func New(dir string) (*EventStore, error) {
+	db, err := bitcask.Open(dir, bitcask.Options{TTL: DefaultTTL})
 	if err != nil {
 		return nil, err
 	}
 	return &EventStore{
 		db:           db,
-		lessor:       lessor,
 		watchStreams: newWatchStreamSet(),
 	}, nil
 }
@@ -81,22 +87,14 @@ func (es *EventStore) Revision() int64 {
 	return atomic.LoadInt64(&es.rev)
 }
 
-// Put stores an event key, deriving its expiry from r.Lease (looked up via
-// the shared lessor) without attaching the key to that lease: LeaseGrant/
-// Revoke keep going through the normal Raft/BoltDB path unaffected.
+// Put stores an event key. Its expiry is DefaultTTL after this write,
+// regardless of r.Lease: LeaseGrant/Revoke for event keys keep going through
+// the normal Raft/BoltDB path unaffected, but this store never attaches to
+// or looks up that lease, so its actual TTL/remaining time is irrelevant
+// here. r.Lease is stored as-is, purely as response/read-back metadata.
 func (es *EventStore) Put(r *pb.PutRequest) (*pb.PutResponse, error) {
-	leaseID := lease.LeaseID(r.Lease)
-	var expireAt int64
-	if leaseID != lease.NoLease {
-		l := es.lessor.Lookup(leaseID)
-		if l == nil {
-			return nil, lease.ErrLeaseNotFound
-		}
-		expireAt = time.Now().Add(l.Remaining()).UnixNano()
-	}
-
 	var oldKV *mvccpb.KeyValue
-	if old, _, found := es.db.Get(r.Key); found {
+	if old, found := es.db.Get(r.Key); found {
 		oldKV = &mvccpb.KeyValue{}
 		if err := oldKV.Unmarshal(old); err != nil {
 			oldKV = nil
@@ -107,8 +105,9 @@ func (es *EventStore) Put(r *pb.PutRequest) (*pb.PutResponse, error) {
 	if r.IgnoreValue && oldKV != nil {
 		value = oldKV.Value
 	}
+	leaseVal := r.Lease
 	if r.IgnoreLease && oldKV != nil {
-		leaseID = lease.LeaseID(oldKV.Lease)
+		leaseVal = oldKV.Lease
 	}
 
 	rev := es.nextRevision()
@@ -125,13 +124,13 @@ func (es *EventStore) Put(r *pb.PutRequest) (*pb.PutResponse, error) {
 		CreateRevision: createRev,
 		ModRevision:    rev,
 		Version:        version,
-		Lease:          int64(leaseID),
+		Lease:          leaseVal,
 	}
 	data, err := kv.Marshal()
 	if err != nil {
 		return nil, err
 	}
-	if err := es.db.Put(r.Key, data, expireAt); err != nil {
+	if err := es.db.Put(r.Key, data); err != nil {
 		return nil, err
 	}
 

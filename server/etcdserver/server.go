@@ -364,7 +364,7 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		ExpiredLeasesRetryInterval: srv.Cfg.ReqTimeout(),
 	})
 
-	srv.eventStore, err = eventstore.New(filepath.Join(cfg.MemberDir(), "event-bitcask"), srv.lessor)
+	srv.eventStore, err = eventstore.New(filepath.Join(cfg.MemberDir(), "event-bitcask"))
 	if err != nil {
 		cfg.Logger.Error("failed to create event store", zap.Error(err))
 		return nil, err

@@ -20,13 +20,11 @@ import (
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
-	"go.etcd.io/etcd/server/v3/lease"
 )
 
 func newTestStore(t *testing.T) *EventStore {
 	t.Helper()
-	fl := &lease.FakeLessor{LeaseSet: make(map[lease.LeaseID]struct{})}
-	es, err := New(t.TempDir(), fl)
+	es, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -88,11 +86,23 @@ func TestPutGetRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPutUnknownLease(t *testing.T) {
+// TestPutStoresLeaseAsMetadataOnly documents that Lease is no longer
+// validated or used to compute expiry (see DefaultTTL): any value, including
+// one that doesn't correspond to a real lease, is accepted and stored
+// verbatim as read-back metadata on the KeyValue.
+func TestPutStoresLeaseAsMetadataOnly(t *testing.T) {
 	es := newTestStore(t)
-	_, err := es.Put(&pb.PutRequest{Key: []byte("/registry/events/x"), Value: []byte("v"), Lease: 12345})
-	if err != lease.ErrLeaseNotFound {
-		t.Fatalf("err = %v; want lease.ErrLeaseNotFound", err)
+	key := []byte("/registry/events/x")
+	if _, err := es.Put(&pb.PutRequest{Key: key, Value: []byte("v"), Lease: 12345}); err != nil {
+		t.Fatalf("Put with unknown lease id: %v", err)
+	}
+
+	rangeResp, err := es.Range(&pb.RangeRequest{Key: key})
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(rangeResp.Kvs) != 1 || rangeResp.Kvs[0].Lease != 12345 {
+		t.Fatalf("Kvs = %+v; want one kv with Lease=12345", rangeResp.Kvs)
 	}
 }
 
