@@ -24,11 +24,12 @@ import (
 //
 //	tstamp(8) | keySize(4) | valueSize(4) | key | value
 //
-// tstamp is the record's original write time (preserved verbatim across
-// merges, see merge.go) and is the sole input to expiry: a record is
-// treated as absent once DB.opt.TTL has elapsed since tstamp, mirroring
-// Riak bitcask's bucket-level expiry rather than storing a per-record
-// absolute deadline.
+// tstamp is the record's write time and is the sole input to expiry: a
+// record is treated as absent once DB.opt.TTL has elapsed since tstamp,
+// mirroring Riak bitcask's bucket-level expiry rather than storing a
+// per-record absolute deadline. It also becomes that file's deadline once
+// sealed (see rollActiveFileLocked/reap.go), so the whole file can be
+// deleted at once instead of merging live records out of it.
 //
 // There is no checksum and no tombstone marker: this engine never rebuilds
 // its keydir from the log (data directory is wiped on every Open), so

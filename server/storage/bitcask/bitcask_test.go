@@ -16,6 +16,8 @@ package bitcask
 
 import (
 	"fmt"
+	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -137,7 +139,7 @@ func TestDeleteRange(t *testing.T) {
 	}
 }
 
-func TestFileRotationAndMerge(t *testing.T) {
+func TestFileRotation(t *testing.T) {
 	// tiny max file size to force rotation after a couple of writes
 	db := openTestDB(t, Options{MaxFileSize: 128})
 
@@ -151,7 +153,8 @@ func TestFileRotationAndMerge(t *testing.T) {
 		t.Fatalf("activeID = %d; want > 1 (expected rotation)", db.activeID)
 	}
 
-	// overwrite every key so all older files become fully dead
+	// overwrite every key; each Put's read must still resolve to the latest
+	// value regardless of which (possibly now-sealed) file it lives in
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key-%03d", i)
 		if err := db.Put([]byte(k), []byte("updated")); err != nil {
@@ -159,42 +162,100 @@ func TestFileRotationAndMerge(t *testing.T) {
 		}
 	}
 
-	if err := db.merge(); err != nil {
-		t.Fatalf("merge: %v", err)
-	}
-
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key-%03d", i)
 		val, ok := db.Get([]byte(k))
 		if !ok || string(val) != "updated" {
-			t.Fatalf("Get(%s) after merge = %q, %v; want updated, true", k, val, ok)
+			t.Fatalf("Get(%s) = %q, %v; want updated, true", k, val, ok)
 		}
 	}
 }
 
-// TestMergePreservesTstamp guards against restamping a record's write time
-// during merge: since expiry is TTL-since-tstamp, restamping to the merge
-// time would reset every surviving record's expiry clock and keys would
-// never expire as long as merge keeps running.
-func TestMergePreservesTstamp(t *testing.T) {
-	db := openTestDB(t, Options{MaxFileSize: 64, TTL: 150 * time.Millisecond})
+// TestReapDeletesWholeExpiredSealedFile verifies the merge-free space
+// reclamation strategy: once a sealed file's deadline (its last write's
+// tstamp) is older than TTL, every record in it must have individually
+// expired too, so reapExpiredFiles deletes the file outright without
+// touching the keydir — and a later Get on a key that lived in it finds it
+// expired (lazy delete) instead of erroring or panicking.
+func TestReapDeletesWholeExpiredSealedFile(t *testing.T) {
+	db := openTestDB(t, Options{MaxFileSize: 32, TTL: 80 * time.Millisecond})
 
 	db.Put([]byte("k1"), []byte("v1"))
-	// force a rotation so k1's file becomes sealed and eligible for merge
-	db.Put([]byte("k2"), []byte(make([]byte, 128)))
-
-	if db.activeID <= 1 {
-		t.Fatalf("activeID = %d; want > 1 (expected rotation)", db.activeID)
-	}
-	if err := db.merge(); err != nil {
-		t.Fatalf("merge: %v", err)
-	}
-	if _, ok := db.Get([]byte("k1")); !ok {
-		t.Fatalf("Get(k1) right after merge = false; want true (not yet expired)")
+	sealedID := db.activeID
+	// force rotation so k1's file is sealed
+	db.Put([]byte("k2"), []byte(make([]byte, 64)))
+	if db.activeID == sealedID {
+		t.Fatalf("activeID did not advance; want rotation past %d", sealedID)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	sealedPath := dataFileName(db.dir, sealedID)
+	if _, err := os.Stat(sealedPath); err != nil {
+		t.Fatalf("sealed file missing right after rotation: %v", err)
+	}
+
+	// not expired yet: reap must leave the sealed file alone
+	db.reapExpiredFiles()
+	if _, err := os.Stat(sealedPath); err != nil {
+		t.Fatalf("sealed file removed before TTL elapsed: %v", err)
+	}
+	if val, ok := db.Get([]byte("k1")); !ok || string(val) != "v1" {
+		t.Fatalf("Get(k1) before TTL elapsed = %q, %v; want v1, true", val, ok)
+	}
+
+	time.Sleep(120 * time.Millisecond)
+	db.reapExpiredFiles()
+
+	if _, err := os.Stat(sealedPath); !os.IsNotExist(err) {
+		t.Fatalf("sealed file still present after reap: err=%v", err)
+	}
 	if _, ok := db.Get([]byte("k1")); ok {
-		t.Fatalf("Get(k1) after TTL elapsed post-merge = true; want false (merge must not reset tstamp)")
+		t.Fatalf("Get(k1) after reap = true; want false (lazy-expired on lookup)")
 	}
+}
+
+// TestReapNeverTouchesActiveFile verifies the active file is never reaped
+// even once records written to it are individually expired: only sealed
+// files get a frozen deadline, so the active file is always skipped, and
+// still-expired keys within it keep working correctly via lazy expiry.
+func TestReapNeverTouchesActiveFile(t *testing.T) {
+	db := openTestDB(t, Options{TTL: 30 * time.Millisecond})
+
+	db.Put([]byte("k1"), []byte("v1"))
+	activePath := dataFileName(db.dir, db.activeID)
+
+	time.Sleep(60 * time.Millisecond)
+	db.reapExpiredFiles()
+
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active file removed by reap: %v", err)
+	}
+	if _, ok := db.Get([]byte("k1")); ok {
+		t.Fatalf("Get(k1) after TTL elapsed = true; want false")
+	}
+}
+
+// TestConcurrentPutAndReap stresses Put (which seals files under writeMu)
+// running concurrently with reapExpiredFiles (which deletes sealed files
+// under filesMu) — meant to be run with -race, since reapExpiredFiles and
+// rollActiveFileLocked must never nest writeMu/filesMu in opposite orders.
+func TestConcurrentPutAndReap(t *testing.T) {
+	db := openTestDB(t, Options{MaxFileSize: 64, TTL: 5 * time.Millisecond})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			k := fmt.Sprintf("key-%03d", i%20)
+			db.Put([]byte(k), []byte("some-value-padding-to-force-rotation"))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			db.reapExpiredFiles()
+			db.Get([]byte("key-000"))
+		}
+	}()
+	wg.Wait()
 }

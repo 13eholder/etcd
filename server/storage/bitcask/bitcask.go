@@ -28,6 +28,11 @@
 //     design above.
 //   - The in-memory index is a B-tree (not a hash map) so Range/DeleteRange
 //     can do ordered prefix/interval scans directly against the index.
+//   - There is no merge/compaction: once every record in a sealed file is
+//     older than Options.TTL, the whole file is deleted outright (see
+//     reap.go). The keydir is never proactively cleaned up to match; a key
+//     whose file was reaped is simply found expired (and dropped) the next
+//     time something looks it up (see DB.expired).
 package bitcask
 
 import (
@@ -37,8 +42,8 @@ import (
 )
 
 const (
-	defaultMaxFileSize   = 64 << 20 // 64MiB
-	defaultMergeInterval = 10 * time.Minute
+	defaultMaxFileSize  = 64 << 20 // 64MiB
+	defaultReapInterval = 10 * time.Minute
 )
 
 // Options configures a DB. Zero values fall back to the defaults documented
@@ -47,14 +52,14 @@ type Options struct {
 	// MaxFileSize is the size threshold at which the active data file is
 	// sealed and a new one is rolled. Default: 64MiB.
 	MaxFileSize int64
-	// MergeInterval is how often the background goroutine purges expired
-	// keys and compacts sealed data files. Default: 10 minutes.
-	MergeInterval time.Duration
+	// ReapInterval is how often the background goroutine checks whether the
+	// oldest sealed data file can be deleted outright. Default: 10 minutes.
+	ReapInterval time.Duration
 	// TTL is a single store-wide expiry applied to every key, measured from
 	// each record's write time (its on-disk tstamp), independent of any
 	// per-key deadline. This mirrors Riak bitcask's bucket-level expiry
 	// rather than a per-record absolute deadline. Zero (the default) means
-	// keys never expire.
+	// keys never expire, and sealed files are never reaped.
 	TTL time.Duration
 }
 
@@ -62,8 +67,8 @@ func (o Options) withDefaults() Options {
 	if o.MaxFileSize <= 0 {
 		o.MaxFileSize = defaultMaxFileSize
 	}
-	if o.MergeInterval <= 0 {
-		o.MergeInterval = defaultMergeInterval
+	if o.ReapInterval <= 0 {
+		o.ReapInterval = defaultReapInterval
 	}
 	return o
 }
@@ -82,16 +87,21 @@ type DB struct {
 	kd *keydir
 
 	// writeMu serializes appends to the active file (Bitcask's classic
-	// single-writer model) and protects activeFile/activeID/activeSize.
-	writeMu    sync.Mutex
-	activeFile *os.File
-	activeID   uint32
-	activeSize int64
-	nextFileID uint32
+	// single-writer model) and protects activeFile/activeID/activeSize/
+	// activeDeadline.
+	writeMu        sync.Mutex
+	activeFile     *os.File
+	activeID       uint32
+	activeSize     int64
+	activeDeadline int64 // tstamp (unix nano) of the most recent write to activeFile
+	nextFileID     uint32
 
-	// filesMu guards the read-handle cache used by Get/Range/merge.
-	filesMu sync.RWMutex
-	files   map[uint32]*os.File
+	// filesMu guards the read-handle cache and per-file deadline bookkeeping
+	// used by Get/Range/reapExpiredFiles.
+	filesMu      sync.RWMutex
+	files        map[uint32]*os.File
+	deadlines    map[uint32]int64 // sealed fileID -> tstamp of its last write
+	oldestFileID uint32           // smallest sealed fileID not yet reaped; 0 = none sealed yet
 
 	stopc chan struct{}
 	wg    sync.WaitGroup
@@ -110,11 +120,12 @@ func Open(dir string, opt Options) (*DB, error) {
 	}
 
 	db := &DB{
-		dir:   dir,
-		opt:   opt,
-		kd:    newKeydir(),
-		files: make(map[uint32]*os.File),
-		stopc: make(chan struct{}),
+		dir:       dir,
+		opt:       opt,
+		kd:        newKeydir(),
+		files:     make(map[uint32]*os.File),
+		deadlines: make(map[uint32]int64),
+		stopc:     make(chan struct{}),
 	}
 	if err := db.rollActiveFileLocked(1); err != nil {
 		return nil, err
@@ -128,6 +139,19 @@ func Open(dir string, opt Options) (*DB, error) {
 // rollActiveFileLocked seals the current active file (if any) and opens a
 // new one as id. Callers must hold writeMu.
 func (db *DB) rollActiveFileLocked(id uint32) error {
+	// Seal the outgoing active file (none on the very first call from Open,
+	// when activeID is still zero): freeze its deadline at the tstamp of its
+	// last write, so reapExpiredFiles can later delete it wholesale once
+	// that write has aged past TTL.
+	if db.activeID != 0 {
+		db.filesMu.Lock()
+		db.deadlines[db.activeID] = db.activeDeadline
+		if db.oldestFileID == 0 {
+			db.oldestFileID = db.activeID
+		}
+		db.filesMu.Unlock()
+	}
+
 	f, err := os.OpenFile(dataFileName(db.dir, id), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
@@ -135,6 +159,7 @@ func (db *DB) rollActiveFileLocked(id uint32) error {
 	db.activeFile = f
 	db.activeID = id
 	db.activeSize = 0
+	db.activeDeadline = 0
 	if id > db.nextFileID {
 		db.nextFileID = id
 	}
@@ -177,6 +202,7 @@ func (db *DB) Put(key, value []byte) error {
 	}
 	fileID := db.activeID
 	db.activeSize += int64(n)
+	db.activeDeadline = tstamp
 	db.writeMu.Unlock()
 
 	db.kd.set(&keydirEntry{
@@ -309,7 +335,7 @@ func (db *DB) Len() int {
 	return db.kd.len()
 }
 
-// Close stops the background merge loop and closes all open file handles.
+// Close stops the background reaper loop and closes all open file handles.
 func (db *DB) Close() error {
 	close(db.stopc)
 	db.wg.Wait()
@@ -331,28 +357,14 @@ func (db *DB) Close() error {
 
 func (db *DB) backgroundLoop() {
 	defer db.wg.Done()
-	ticker := time.NewTicker(db.opt.MergeInterval)
+	ticker := time.NewTicker(db.opt.ReapInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			db.purgeExpired()
-			db.merge()
+			db.reapExpiredFiles()
 		case <-db.stopc:
 			return
 		}
-	}
-}
-
-func (db *DB) purgeExpired() {
-	var expiredKeys []string
-	db.kd.ascendAll(func(e *keydirEntry) bool {
-		if db.expired(e) {
-			expiredKeys = append(expiredKeys, e.key)
-		}
-		return true
-	})
-	for _, k := range expiredKeys {
-		db.kd.delete(k)
 	}
 }

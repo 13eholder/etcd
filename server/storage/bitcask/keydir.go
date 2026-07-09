@@ -53,20 +53,6 @@ func (kd *keydir) set(e *keydirEntry) {
 	kd.tree.ReplaceOrInsert(e)
 }
 
-// compareAndSwap replaces old with newE only if the entry currently stored
-// for old.key is still the same pointer as old (i.e. untouched since the
-// caller read it). Used by merge to avoid clobbering a concurrent write.
-func (kd *keydir) compareAndSwap(old, newE *keydirEntry) bool {
-	kd.mu.Lock()
-	defer kd.mu.Unlock()
-	cur, ok := kd.tree.Get(old)
-	if !ok || cur != old {
-		return false
-	}
-	kd.tree.ReplaceOrInsert(newE)
-	return true
-}
-
 func (kd *keydir) get(key string) (*keydirEntry, bool) {
 	kd.mu.RLock()
 	defer kd.mu.RUnlock()
@@ -99,15 +85,6 @@ func (kd *keydir) ascend(start string, end []byte, visit func(*keydirEntry) bool
 		if len(endStr) > 0 && item.key >= endStr {
 			return false
 		}
-		return visit(item)
-	})
-}
-
-// ascendAll visits every entry in ascending key order.
-func (kd *keydir) ascendAll(visit func(*keydirEntry) bool) {
-	kd.mu.RLock()
-	defer kd.mu.RUnlock()
-	kd.tree.Ascend(func(item *keydirEntry) bool {
 		return visit(item)
 	})
 }
