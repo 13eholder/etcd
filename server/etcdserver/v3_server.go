@@ -209,6 +209,17 @@ func (s *EtcdServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) 
 }
 
 func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
+	if eventstore.IsEventTxn(r) {
+		authInfo, err := s.eventAuthInfoFromCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := txn.CheckTxnAuth(s.authStore, authInfo, r); err != nil {
+			return nil, err
+		}
+		return s.eventStore.Txn(r)
+	}
+
 	if txn.IsTxnReadonly(r) {
 		trace := traceutil.New("transaction",
 			s.Logger(),
