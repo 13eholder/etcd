@@ -15,7 +15,7 @@ replace (
 )
 
 require (
-	github.com/13eholder/vmbolt v0.3.1
+	github.com/13eholder/vmbolt v0.6.0
 	github.com/anishathalye/porcupine v0.1.4
 	github.com/coreos/go-semver v0.3.1
 	github.com/golang/protobuf v1.5.4

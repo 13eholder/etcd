@@ -1,6 +1,8 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
-github.com/13eholder/vmbolt v0.3.1 h1:WTyD6xW0qw+aqyxt462VNobJfkeRgr14Mkw1wuO6qfc=
-github.com/13eholder/vmbolt v0.3.1/go.mod h1:NcPTo4IcJ8RiRWBMTRlNfKXqxe8XoGZl/1L7Zd3aF2U=
+github.com/13eholder/vmbolt v0.5.1 h1:P80+6Dt32z6phSxmPZZ4vDDixbtys6ZWjQZeZg+Y1gM=
+github.com/13eholder/vmbolt v0.5.1/go.mod h1:NcPTo4IcJ8RiRWBMTRlNfKXqxe8XoGZl/1L7Zd3aF2U=
+github.com/13eholder/vmbolt v0.6.0 h1:Do7v1V1QVRJw6hHzguduHwlreJZEB2lwuZtvIeB5d/Y=
+github.com/13eholder/vmbolt v0.6.0/go.mod h1:NcPTo4IcJ8RiRWBMTRlNfKXqxe8XoGZl/1L7Zd3aF2U=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/VividCortex/ewma v1.2.0 h1:f58SaIzcDXrSy3kWaHNvuJgJ3Nmz59Zji6XoJR/q1ow=
 github.com/VividCortex/ewma v1.2.0/go.mod h1:nz4BbCtbLyFDeC9SUHbtcT5644juEuWfUAUnGx7j5l4=

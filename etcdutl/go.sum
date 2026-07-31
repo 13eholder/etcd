@@ -1,5 +1,5 @@
-github.com/13eholder/vmbolt v0.3.1 h1:WTyD6xW0qw+aqyxt462VNobJfkeRgr14Mkw1wuO6qfc=
-github.com/13eholder/vmbolt v0.3.1/go.mod h1:NcPTo4IcJ8RiRWBMTRlNfKXqxe8XoGZl/1L7Zd3aF2U=
+github.com/13eholder/vmbolt v0.6.0 h1:Do7v1V1QVRJw6hHzguduHwlreJZEB2lwuZtvIeB5d/Y=
+github.com/13eholder/vmbolt v0.6.0/go.mod h1:NcPTo4IcJ8RiRWBMTRlNfKXqxe8XoGZl/1L7Zd3aF2U=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=

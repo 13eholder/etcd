@@ -16,7 +16,7 @@ replace (
 )
 
 require (
-	github.com/13eholder/vmbolt v0.3.1
+	github.com/13eholder/vmbolt v0.6.0
 	github.com/bgentry/speakeasy v0.2.0
 	github.com/cheggaaa/pb/v3 v3.1.6
 	github.com/coreos/go-semver v0.3.1

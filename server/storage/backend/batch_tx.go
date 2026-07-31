@@ -158,7 +158,8 @@ func (t *batchTx) unsafePut(bucketType Bucket, key []byte, value []byte, seq boo
 	if seq {
 		// it is useful to increase fill percent when the workloads are mostly append-only.
 		// this can delay the page split and reduce space usage.
-		bucket.FillPercent = 0.9
+		// bucket.FillPercent = 0.9
+		bucket.SetFillPercent(1.0)
 	}
 	if err := bucket.Put(key, value); err != nil {
 		t.backend.lg.Fatal(

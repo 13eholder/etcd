@@ -636,7 +636,7 @@ func defragdb(odb, tmpdb *bolt.DB, limit int) error {
 		if berr != nil {
 			return berr
 		}
-		tmpb.FillPercent = 0.9 // for bucket2seq write in for each
+		tmpb.SetFillPercent(0.9) // for bucket2seq write in for each
 
 		if err = b.ForEach(func(k, v []byte) error {
 			count++
@@ -650,7 +650,7 @@ func defragdb(odb, tmpdb *bolt.DB, limit int) error {
 					return err
 				}
 				tmpb = tmptx.Bucket(next)
-				tmpb.FillPercent = 0.9 // for bucket2seq write in for each
+				tmpb.SetFillPercent(0.9) // for bucket2seq write in for each
 
 				count = 0
 			}
